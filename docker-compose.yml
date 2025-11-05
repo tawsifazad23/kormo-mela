@@ -1,0 +1,191 @@
+name: kormo-mela
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: km-postgres
+    environment:
+      POSTGRES_DB: kormo
+      POSTGRES_USER: kormo
+      POSTGRES_PASSWORD: kormo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kormo -d kormo"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  redis:
+    image: redis:7-alpine
+    container_name: km-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  auth:
+    build:
+      context: ./services/auth
+      dockerfile: Dockerfile
+    container_name: km-auth
+    environment:
+      DB_USER: kormo
+      DB_PASS: kormo
+      DB_NAME: kormo
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      AUTH_SECRET: "please-change-me-in-prod"
+      ACCESS_TTL_SECONDS: "900"
+      REFRESH_TTL_SECONDS: "1209600"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  booking-go:
+    build:
+      context: ./services/booking-go
+      dockerfile: Dockerfile
+    container_name: km-booking-go
+    environment:
+      AUTH_SECRET: "please-change-me-in-prod"
+      DB_USER: kormo
+      DB_PASS: kormo
+      DB_NAME: kormo
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      NOTIFY_BASE: "http://notifications:8005"
+        # events
+      REDIS_HOST: redis      
+      REDIS_PORT: "6379"    
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  provider:
+    build:
+      context: ./services/provider
+      dockerfile: Dockerfile
+    container_name: km-provider
+    environment:
+      DB_USER: kormo
+      DB_PASS: kormo
+      DB_NAME: kormo
+      DB_HOST: postgres
+      DB_PORT: "5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8002/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  search:
+    build:
+      context: ./services/search
+      dockerfile: Dockerfile
+    container_name: km-search
+    environment:
+      DB_USER: kormo
+      DB_PASS: kormo
+      DB_NAME: kormo
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
+      CACHE_TTL_SECONDS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8003/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  payments:
+    build:
+      context: ./services/payments
+      dockerfile: Dockerfile
+    container_name: km-payments
+    environment:
+      DB_USER: kormo
+      DB_PASS: kormo
+      DB_NAME: kormo
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      PAYMENTS_WEBHOOK_SECRET: "dev-secret"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8004/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  notifications:
+    build:
+      context: ./services/notifications
+      dockerfile: Dockerfile
+    container_name: km-notifications
+    environment:
+      DB_NAME: kormo
+      DB_USER: kormo
+      DB_PASS: kormo
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      REDIS_HOST: redis         
+      REDIS_PORT: "6379"         
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8005/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app]
+
+  gateway:
+    image: nginx:alpine
+    container_name: km-gateway
+    ports:
+      - "8080:80"
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth
+      - booking-go
+      - provider
+      - search
+      - payments
+      - notifications
+    networks: [app]
+
+networks:
+  app: {}
